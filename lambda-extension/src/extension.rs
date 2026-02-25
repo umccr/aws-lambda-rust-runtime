@@ -4,11 +4,12 @@ use hyper::{body::Incoming, server::conn::http1, service::service_fn};
 
 use hyper_util::rt::tokio::TokioIo;
 use lambda_runtime_api_client::Client;
-use serde::Deserialize;
+use serde::{de::DeserializeOwned, Deserialize};
 use std::{
     convert::Infallible,
     fmt,
     future::{ready, Future},
+    marker::PhantomData,
     net::SocketAddr,
     path::PathBuf,
     pin::Pin,
@@ -29,7 +30,7 @@ const DEFAULT_LOG_PORT_NUMBER: u16 = 9002;
 const DEFAULT_TELEMETRY_PORT_NUMBER: u16 = 9003;
 
 /// An Extension that runs event, log and telemetry processors
-pub struct Extension<'a, E, L, T> {
+pub struct Extension<'a, E, L, T, TL = String> {
     extension_name: Option<&'a str>,
     events: Option<&'a [&'a str]>,
     events_processor: E,
@@ -41,6 +42,7 @@ pub struct Extension<'a, E, L, T> {
     telemetry_processor: Option<T>,
     telemetry_buffering: Option<LogBuffering>,
     telemetry_port_number: u16,
+    _telemetry_record_type: PhantomData<fn(TL)>,
 }
 
 impl Extension<'_, Identity<LambdaEvent>, MakeIdentity<Vec<LambdaLog>>, MakeIdentity<Vec<LambdaTelemetry>>> {
@@ -58,6 +60,7 @@ impl Extension<'_, Identity<LambdaEvent>, MakeIdentity<Vec<LambdaLog>>, MakeIden
             telemetry_buffering: None,
             telemetry_processor: None,
             telemetry_port_number: DEFAULT_TELEMETRY_PORT_NUMBER,
+            _telemetry_record_type: PhantomData,
         }
     }
 }
@@ -70,7 +73,7 @@ impl Default
     }
 }
 
-impl<'a, E, L, T> Extension<'a, E, L, T>
+impl<'a, E, L, T, TL> Extension<'a, E, L, T, TL>
 where
     E: Service<LambdaEvent>,
     E::Future: Future<Output = Result<(), E::Error>>,
@@ -85,12 +88,13 @@ where
     L::Future: Send,
 
     // Fixme: 'static bound might be too restrictive
-    T: MakeService<(), Vec<LambdaTelemetry>, Response = ()> + Send + Sync + 'static,
-    T::Service: Service<Vec<LambdaTelemetry>, Response = ()> + Send + Sync,
-    <T::Service as Service<Vec<LambdaTelemetry>>>::Future: Send + 'a,
+    T: MakeService<(), Vec<LambdaTelemetry<TL>>, Response = ()> + Send + Sync + 'static,
+    T::Service: Service<Vec<LambdaTelemetry<TL>>, Response = ()> + Send + Sync,
+    <T::Service as Service<Vec<LambdaTelemetry<TL>>>>::Future: Send + 'a,
     T::Error: Into<Error> + fmt::Debug,
     T::MakeError: Into<Error> + fmt::Debug,
     T::Future: Send,
+    TL: DeserializeOwned + Send + 'static,
 {
     /// Create a new [`Extension`] with a given extension name
     pub fn with_extension_name(self, extension_name: &'a str) -> Self {
@@ -110,7 +114,7 @@ where
     }
 
     /// Create a new [`Extension`] with a service that receives Lambda events.
-    pub fn with_events_processor<N>(self, ep: N) -> Extension<'a, N, L, T>
+    pub fn with_events_processor<N>(self, ep: N) -> Extension<'a, N, L, T, TL>
     where
         N: Service<LambdaEvent>,
         N::Future: Future<Output = Result<(), N::Error>>,
@@ -128,11 +132,12 @@ where
             telemetry_buffering: self.telemetry_buffering,
             telemetry_processor: self.telemetry_processor,
             telemetry_port_number: self.telemetry_port_number,
+            _telemetry_record_type: self._telemetry_record_type,
         }
     }
 
     /// Create a new [`Extension`] with a service that receives Lambda logs.
-    pub fn with_logs_processor<N, NS>(self, lp: N) -> Extension<'a, E, N, T>
+    pub fn with_logs_processor<N, NS>(self, lp: N) -> Extension<'a, E, N, T, TL>
     where
         N: Service<()>,
         N::Future: Future<Output = Result<NS, N::Error>>,
@@ -150,6 +155,7 @@ where
             telemetry_buffering: self.telemetry_buffering,
             telemetry_processor: self.telemetry_processor,
             telemetry_port_number: self.telemetry_port_number,
+            _telemetry_record_type: self._telemetry_record_type,
         }
     }
 
@@ -179,7 +185,11 @@ where
     }
 
     /// Create a new [`Extension`] with a service that receives Lambda telemetry data.
-    pub fn with_telemetry_processor<N, NS>(self, lp: N) -> Extension<'a, E, L, N>
+    ///
+    /// By default, telemetry log records are deserialized as `String`, but
+    /// it's possible to configure Lambda functions to emit logs in JSON format.
+    /// For more information, refer to [`Self::with_telemetry_record_type`].
+    pub fn with_telemetry_processor<N, NS>(self, lp: N) -> Extension<'a, E, L, N, TL>
     where
         N: Service<()>,
         N::Future: Future<Output = Result<NS, N::Error>>,
@@ -197,6 +207,7 @@ where
             telemetry_types: self.telemetry_types,
             telemetry_buffering: self.telemetry_buffering,
             telemetry_port_number: self.telemetry_port_number,
+            _telemetry_record_type: self._telemetry_record_type,
         }
     }
 
@@ -342,6 +353,48 @@ where
     /// Execute the given extension.
     pub async fn run(self) -> Result<(), Error> {
         self.register().await?.run().await
+    }
+}
+
+impl<'a, E, L> Extension<'a, E, L, MakeIdentity<Vec<LambdaTelemetry>>> {
+    /// Set the deserialization type for telemetry log records.
+    ///
+    /// By default, telemetry log records are deserialized as `String`, but
+    /// it's possible to configure Lambda functions to emit logs in JSON format.
+    /// Use this method to deserialize into a different type, such as
+    /// `serde_json::Value`.
+    ///
+    /// Must be called before [`Self::with_telemetry_processor`].
+    ///
+    /// ```
+    /// use lambda_extension::{Extension, LambdaTelemetry, SharedService, service_fn};
+    ///
+    /// async fn handler(events: Vec<LambdaTelemetry<serde_json::Value>>) -> Result<(), lambda_extension::Error> {
+    ///     for event in &events {
+    ///         println!("{event:?}");
+    ///     }
+    ///     Ok(())
+    /// }
+    ///
+    /// let _ext = Extension::new()
+    ///     .with_telemetry_record_type::<serde_json::Value>()
+    ///     .with_telemetry_processor(SharedService::new(service_fn(handler)));
+    /// ```
+    pub fn with_telemetry_record_type<N>(self) -> Extension<'a, E, L, MakeIdentity<Vec<LambdaTelemetry<N>>>, N> {
+        Extension {
+            _telemetry_record_type: PhantomData,
+            telemetry_processor: None,
+            events_processor: self.events_processor,
+            extension_name: self.extension_name,
+            events: self.events,
+            log_types: self.log_types,
+            log_buffering: self.log_buffering,
+            logs_processor: self.logs_processor,
+            log_port_number: self.log_port_number,
+            telemetry_types: self.telemetry_types,
+            telemetry_buffering: self.telemetry_buffering,
+            telemetry_port_number: self.telemetry_port_number,
+        }
     }
 }
 

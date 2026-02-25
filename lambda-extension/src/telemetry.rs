@@ -3,7 +3,7 @@ use http::{Request, Response};
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
 use lambda_runtime_api_client::body::Body;
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{boxed::Box, fmt, sync::Arc};
 use tokio::sync::Mutex;
 use tower::Service;
@@ -11,23 +11,23 @@ use tracing::{error, trace};
 
 /// Payload received from the Telemetry API
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
-pub struct LambdaTelemetry {
+pub struct LambdaTelemetry<L = String> {
     /// Time when the telemetry was generated
     pub time: DateTime<Utc>,
     /// Telemetry record entry
     #[serde(flatten)]
-    pub record: LambdaTelemetryRecord,
+    pub record: LambdaTelemetryRecord<L>,
 }
 
 /// Record in a LambdaTelemetry entry
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(tag = "type", content = "record", rename_all = "lowercase")]
-pub enum LambdaTelemetryRecord {
+pub enum LambdaTelemetryRecord<L = String> {
     /// Function log records
-    Function(String),
+    Function(L),
 
     /// Extension log records
-    Extension(String),
+    Extension(L),
 
     /// Platform init start record
     #[serde(rename = "platform.initStart", rename_all = "camelCase")]
@@ -269,14 +269,15 @@ pub struct RuntimeDoneMetrics {
 ///
 /// This takes an `hyper::Request` and transforms it into `Vec<LambdaTelemetry>` for the
 /// underlying `Service` to process.
-pub(crate) async fn telemetry_wrapper<S>(
+pub(crate) async fn telemetry_wrapper<S, L>(
     service: Arc<Mutex<S>>,
     req: Request<Incoming>,
 ) -> Result<Response<Body>, Box<dyn std::error::Error + Send + Sync>>
 where
-    S: Service<Vec<LambdaTelemetry>, Response = ()>,
+    S: Service<Vec<LambdaTelemetry<L>>, Response = ()>,
     S::Error: Into<Box<dyn std::error::Error + Send + Sync>> + fmt::Debug,
     S::Future: Send,
+    L: DeserializeOwned,
 {
     trace!("Received telemetry request");
     // Parse the request body as a Vec<LambdaTelemetry>
@@ -291,7 +292,7 @@ where
         }
     };
 
-    let telemetry: Vec<LambdaTelemetry> = match serde_json::from_slice(&body.to_bytes()) {
+    let telemetry: Vec<LambdaTelemetry<L>> = match serde_json::from_slice(&body.to_bytes()) {
         Ok(telemetry) => telemetry,
         Err(e) => {
             error!("Error parsing telemetry: {}", e);
@@ -319,17 +320,17 @@ mod deserialization_tests {
     use chrono::{TimeDelta, TimeZone};
 
     macro_rules! deserialize_tests {
-        ($($name:ident: $value:expr,)*) => {
+        ($($name:ident$(<$log:ty>)?: $value:expr,)*) => {
             $(
                 #[test]
                 fn $name() {
                     let (input, expected) = $value;
-                    let actual = serde_json::from_str::<LambdaTelemetry>(&input).expect("unable to deserialize");
+                    let actual = serde_json::from_str::<LambdaTelemetry$(<$log>)?>(&input).expect("unable to deserialize");
 
                     assert!(actual.record == expected);
                 }
             )*
-        }
+        };
     }
 
     deserialize_tests! {
@@ -339,10 +340,22 @@ mod deserialization_tests {
             LambdaTelemetryRecord::Function("hello world".to_string()),
         ),
 
+        // function (json)
+        function_generic<bool>: (
+            r#"{"time": "2020-08-20T12:31:32.123Z","type": "function", "record": true}"#,
+            LambdaTelemetryRecord::Function(true),
+        ),
+
         // extension
         extension: (
             r#"{"time": "2020-08-20T12:31:32.123Z","type": "extension", "record": "hello world"}"#,
             LambdaTelemetryRecord::Extension("hello world".to_string()),
+        ),
+
+        // extension (json)
+        extension_generic<bool>: (
+            r#"{"time": "2020-08-20T12:31:32.123Z","type": "extension", "record": true}"#,
+            LambdaTelemetryRecord::Extension(true),
         ),
 
         // platform.start
@@ -477,11 +490,11 @@ mod serialization_tests {
 
     use super::*;
     macro_rules! serialize_tests {
-        ($($name:ident: $value:expr,)*) => {
+        ($($name:ident$(<$log:ty>)?: $value:expr,)*) => {
             $(
                 #[test]
                 fn $name() {
-                    let (input, expected) = $value;
+                    let (input, expected): (LambdaTelemetry$(<$log>)?, &str) = $value;
                     let actual = serde_json::to_string(&input).expect("unable to serialize");
                     println!("Input: {:?}\n", input);
                     println!("Expected:\n {:?}\n", expected);
@@ -490,7 +503,7 @@ mod serialization_tests {
                     assert!(actual == expected);
                 }
             )*
-        }
+        };
     }
 
     serialize_tests! {
@@ -502,6 +515,14 @@ mod serialization_tests {
             },
             r#"{"time":"2023-11-28T12:00:09Z","type":"function","record":"hello world"}"#,
         ),
+        // function (json)
+        function_generic<bool>: (
+            LambdaTelemetry {
+                time: Utc.with_ymd_and_hms(2023, 11, 28, 12, 0, 9).unwrap(),
+                record: LambdaTelemetryRecord::Function(true),
+            },
+            r#"{"time":"2023-11-28T12:00:09Z","type":"function","record":true}"#,
+        ),
         // extension
         extension: (
             LambdaTelemetry {
@@ -509,6 +530,14 @@ mod serialization_tests {
                 record: LambdaTelemetryRecord::Extension("hello world".to_string()),
             },
             r#"{"time":"2023-11-28T12:00:09Z","type":"extension","record":"hello world"}"#,
+        ),
+        // extension (json)
+        extension_generic<bool>: (
+            LambdaTelemetry {
+                time: Utc.with_ymd_and_hms(2023, 11, 28, 12, 0, 9).unwrap(),
+                record: LambdaTelemetryRecord::Extension(true),
+            },
+            r#"{"time":"2023-11-28T12:00:09Z","type":"extension","record":true}"#,
         ),
         //platform.Start
         platform_start: (
