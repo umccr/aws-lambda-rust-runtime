@@ -3,6 +3,7 @@ target
 lambda-runtime/libtest.rmeta
 lambda-integration-tests/target
 Cargo.lock
+.test-runner
 
 # Built AWS Lambda zipfile
 lambda.zip
@@ -16,3 +17,7 @@ build
 
 node_modules
 cdk.out
+
+# Test artifacts
+Dockerfile.test-with-tasks
+test/dockerized/tasks/
