@@ -7,6 +7,8 @@ use aws_lambda_events::alb::AlbTargetGroupResponse;
 use aws_lambda_events::apigw::ApiGatewayProxyResponse;
 #[cfg(feature = "apigw_http")]
 use aws_lambda_events::apigw::ApiGatewayV2httpResponse;
+#[cfg(feature = "vpc_lattice")]
+use aws_lambda_events::vpc_lattice::VpcLatticeResponse;
 use aws_lambda_events::encodings::Body;
 use encoding_rs::Encoding;
 use http::{
@@ -51,6 +53,8 @@ pub enum LambdaResponse {
     ApiGatewayV2(ApiGatewayV2httpResponse),
     #[cfg(feature = "alb")]
     Alb(AlbTargetGroupResponse),
+    #[cfg(feature = "vpc_lattice")]
+    VpcLattice(VpcLatticeResponse),
     #[cfg(feature = "pass_through")]
     PassThrough(serde_json::Value),
 }
@@ -160,6 +164,21 @@ impl LambdaResponse {
                 }
                 response
             }),
+            #[cfg(feature = "vpc_lattice")]
+            RequestOrigin::VpcLatticeV2 => LambdaResponse::VpcLattice({
+                let mut response = VpcLatticeResponse::default();
+
+                response.body = body;
+                response.is_base64_encoded = is_base64_encoded;
+                response.status_code = status_code as u16;
+                response.headers = headers;
+                // Today, this implementation doesn't provide any additional fields
+                #[cfg(feature = "catch-all-fields")]
+                {
+                    response.other = Default::default();
+                }
+                response
+            }),
             #[cfg(feature = "pass_through")]
             RequestOrigin::PassThrough => {
                 match body {
@@ -173,9 +192,10 @@ impl LambdaResponse {
                 feature = "apigw_rest",
                 feature = "apigw_http",
                 feature = "alb",
-                feature = "apigw_websockets"
+                feature = "apigw_websockets",
+                feature = "vpc_lattice"
             )))]
-            _ => compile_error!("Either feature `apigw_rest`, `apigw_http`, `alb`, or `apigw_websockets` must be enabled for the `lambda-http` crate."),
+            _ => compile_error!("Either feature `apigw_rest`, `apigw_http`, `alb`, `apigw_websockets` or `vpc_lattice` must be enabled for the `lambda-http` crate."),
         }
     }
 }
@@ -582,6 +602,59 @@ mod tests {
             json,
             r#"{"statusCode":200,"headers":{},"multiValueHeaders":{},"body":"000000","isBase64Encoded":false,"cookies":[]}"#
         )
+    }
+
+    #[test]
+    #[cfg(feature = "vpc_lattice")]
+    fn serialize_vpc_lattice_response_text_body() {
+        let res = LambdaResponse::from_response(
+            &RequestOrigin::VpcLatticeV2,
+            Response::builder()
+                .status(200)
+                .header("content-type", "text/plain")
+                .body(Body::from("hello"))
+                .expect("failed to create response"),
+        );
+        let json = serde_json::to_string(&res).expect("failed to serialize to json");
+        assert_eq!(
+            json,
+            r#"{"isBase64Encoded":false,"statusCode":200,"headers":{"content-type":"text/plain"},"body":"hello"}"#
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "vpc_lattice")]
+    fn serialize_vpc_lattice_response_binary_body() {
+        let res = LambdaResponse::from_response(
+            &RequestOrigin::VpcLatticeV2,
+            Response::builder()
+                .status(200)
+                .body(Body::from(b"hello".as_slice()))
+                .expect("failed to create response"),
+        );
+        let json = serde_json::to_string(&res).expect("failed to serialize to json");
+        assert_eq!(
+            json,
+            r#"{"isBase64Encoded":true,"statusCode":200,"body":"aGVsbG8="}"#
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "vpc_lattice")]
+    fn serialize_vpc_lattice_response_non_200_status() {
+        let res = LambdaResponse::from_response(
+            &RequestOrigin::VpcLatticeV2,
+            Response::builder()
+                .status(404)
+                .header("x-request-id", "abc-123")
+                .body(Body::from(()))
+                .expect("failed to create response"),
+        );
+        let json = serde_json::to_string(&res).expect("failed to serialize to json");
+        assert_eq!(
+            json,
+            r#"{"isBase64Encoded":false,"statusCode":404,"headers":{"x-request-id":"abc-123"},"body":null}"#
+        );
     }
 
     #[test]

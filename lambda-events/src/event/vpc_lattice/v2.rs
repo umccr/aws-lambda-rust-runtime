@@ -1,7 +1,4 @@
-use crate::{
-    custom_serde::{deserialize_headers, deserialize_nullish, http_method, serialize_multi_value_headers},
-    encodings::Body,
-};
+use crate::custom_serde::{deserialize_headers, deserialize_nullish, http_method, serialize_multi_value_headers};
 #[cfg(feature = "builders")]
 use bon::Builder;
 use http::{HeaderMap, Method};
@@ -47,7 +44,7 @@ pub struct VpcLatticeRequestV2 {
 
     /// The request body
     #[serde(default)]
-    pub body: Option<Body>,
+    pub body: Option<String>,
 
     /// Whether the body is base64 encoded
     #[serde(default, deserialize_with = "deserialize_nullish")]

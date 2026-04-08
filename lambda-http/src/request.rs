@@ -1,6 +1,6 @@
-//! ALB and API Gateway request adaptations
+//! ALB and API Gateway and VPC Lattice request adaptations
 //!
-//! Typically these are exposed via the [`request_context()`] or [`request_context_ref()`]
+//! Typically, these are exposed via the [`request_context()`] or [`request_context_ref()`]
 //! request extension methods provided by the [`RequestExt`] trait.
 //!
 //! [`request_context()`]: crate::RequestExt::request_context()
@@ -12,7 +12,8 @@ use crate::ext::extensions::{PathParameters, StageVariables};
     feature = "apigw_rest",
     feature = "apigw_http",
     feature = "alb",
-    feature = "apigw_websockets"
+    feature = "apigw_websockets",
+    feature = "vpc_lattice"
 ))]
 use crate::ext::extensions::{QueryStringParameters, RawHttpPath};
 #[cfg(feature = "alb")]
@@ -25,6 +26,9 @@ use aws_lambda_events::apigw::{ApiGatewayProxyRequest, ApiGatewayProxyRequestCon
 use aws_lambda_events::apigw::{ApiGatewayV2httpRequest, ApiGatewayV2httpRequestContext};
 #[cfg(feature = "apigw_websockets")]
 use aws_lambda_events::apigw::{ApiGatewayWebsocketProxyRequest, ApiGatewayWebsocketProxyRequestContext};
+#[cfg(feature = "vpc_lattice")]
+use aws_lambda_events::vpc_lattice::{VpcLatticeRequestV2, VpcLatticeRequestV2Context};
+
 use aws_lambda_events::{encodings::Body, query_map::QueryMap};
 use http::{header::HeaderName, HeaderMap, HeaderValue};
 
@@ -35,7 +39,7 @@ use std::{env, future::Future, io::Read, pin::Pin};
 use url::Url;
 
 /// Internal representation of an Lambda http event from
-/// ALB, API Gateway REST and HTTP API proxy event perspectives
+/// ALB, VPC Lattice Lambda, API Gateway REST and HTTP API proxy event perspectives
 ///
 /// This is not intended to be a type consumed by crate users directly. The order
 /// of the variants are notable. Serde will try to deserialize in this order.
@@ -51,6 +55,8 @@ pub enum LambdaRequest {
     Alb(AlbTargetGroupRequest),
     #[cfg(feature = "apigw_websockets")]
     WebSocket(ApiGatewayWebsocketProxyRequest),
+    #[cfg(feature = "vpc_lattice")]
+    VpcLatticeV2(VpcLatticeRequestV2),
     #[cfg(feature = "pass_through")]
     PassThrough(String),
 }
@@ -69,15 +75,18 @@ impl LambdaRequest {
             LambdaRequest::Alb { .. } => RequestOrigin::Alb,
             #[cfg(feature = "apigw_websockets")]
             LambdaRequest::WebSocket { .. } => RequestOrigin::WebSocket,
+            #[cfg(feature = "vpc_lattice")]
+            LambdaRequest::VpcLatticeV2 { .. } => RequestOrigin::VpcLatticeV2,
             #[cfg(feature = "pass_through")]
             LambdaRequest::PassThrough { .. } => RequestOrigin::PassThrough,
             #[cfg(not(any(
                 feature = "apigw_rest",
                 feature = "apigw_http",
                 feature = "alb",
-                feature = "apigw_websockets"
+                feature = "apigw_websockets",
+                feature = "vpc_lattice",
             )))]
-            _ => compile_error!("Either feature `apigw_rest`, `apigw_http`, `alb`, or `apigw_websockets` must be enabled for the `lambda-http` crate."),
+            _ => compile_error!("Either feature `apigw_rest`, `apigw_http`, `alb`, `apigw_websockets` or `vpc_lattice` must be enabled for the `lambda-http` crate."),
         }
     }
 }
@@ -102,6 +111,9 @@ pub enum RequestOrigin {
     /// API Gateway WebSocket
     #[cfg(feature = "apigw_websockets")]
     WebSocket,
+    /// VPC Lattice origin
+    #[cfg(feature = "vpc_lattice")]
+    VpcLatticeV2,
     /// PassThrough request origin
     #[cfg(feature = "pass_through")]
     PassThrough,
@@ -274,7 +286,7 @@ fn into_alb_request(alb: AlbTargetGroupRequest) -> http::Request<Body> {
     req
 }
 
-#[cfg(feature = "alb")]
+#[cfg(any(feature = "alb", feature = "vpc_lattice"))]
 fn decode_query_map(query_map: QueryMap) -> QueryMap {
     use std::str::FromStr;
 
@@ -337,6 +349,43 @@ fn into_websocket_request(ag: ApiGatewayWebsocketProxyRequest) -> http::Request<
     req
 }
 
+
+#[cfg(feature = "vpc_lattice")]
+fn into_vpc_lattice_request(vlr: VpcLatticeRequestV2) -> http::Request<Body> {
+    let http_method = vlr.method;
+    let host = vlr.headers.get(http::header::HOST).and_then(|s| s.to_str().ok());
+    let raw_path = vlr.path.unwrap_or_default();
+
+    let query_string_parameters = decode_query_map(vlr.query_string_parameters);
+
+    let builder = http::Request::builder()
+        .uri(build_request_uri(
+            &raw_path,
+            &vlr.headers,
+            host,
+            Some((&query_string_parameters, &query_string_parameters)),
+        ))
+        .extension(RawHttpPath(raw_path))
+        .extension(QueryStringParameters(query_string_parameters))
+        .extension(RequestContext::VpcLattice(vlr.request_context));
+
+    let base64 = vlr.is_base64_encoded;
+
+    let mut req = builder
+        .body(
+            vlr
+                .body
+                .as_deref()
+                .map_or_else(Body::default, |b| Body::from_maybe_encoded(base64, b)),
+        )
+        .expect("failed to build request");
+
+    // no builder method that sets headers in batch
+    let _ = std::mem::replace(req.headers_mut(), vlr.headers);
+    let _ = std::mem::replace(req.method_mut(), http_method.unwrap_or(http::Method::GET));
+
+    req
+}
 #[cfg(feature = "pass_through")]
 fn into_pass_through_request(data: String) -> http::Request<Body> {
     let mut builder = http::Request::builder();
@@ -393,6 +442,9 @@ pub enum RequestContext {
     /// WebSocket request context
     #[cfg(feature = "apigw_websockets")]
     WebSocket(ApiGatewayWebsocketProxyRequestContext),
+    /// VPC Lattice request context
+    #[cfg(feature = "vpc_lattice")]
+    VpcLattice(VpcLatticeRequestV2Context),
     /// Custom request context
     #[cfg(feature = "pass_through")]
     PassThrough,
@@ -410,6 +462,8 @@ impl From<LambdaRequest> for http::Request<Body> {
             LambdaRequest::Alb(alb) => into_alb_request(alb),
             #[cfg(feature = "apigw_websockets")]
             LambdaRequest::WebSocket(ag) => into_websocket_request(ag),
+            #[cfg(feature = "vpc_lattice")]
+            LambdaRequest::VpcLatticeV2(vpclat) => into_vpc_lattice_request(vpclat),
             #[cfg(feature = "pass_through")]
             LambdaRequest::PassThrough(data) => into_pass_through_request(data),
         }
@@ -770,6 +824,183 @@ mod tests {
                 .query_string_parameters_ref()
                 .and_then(|params| params.all("myKey")),
             Some(vec!["?showAll=true", "?showAll=false"])
+        );
+    }
+
+    #[test]
+    fn deserializes_vpc_lattice_basic() {
+        let input = include_str!("../tests/data/vpc_lattice_v2_request.json");
+        let result = from_str(input);
+        assert!(
+            result.is_ok(),
+            "event is was not parsed as expected {result:?} given {input}"
+        );
+        let request = result.expect("failed to parse request");
+        assert_eq!(request.method(), "GET");
+
+        let body_str = match request.body() {
+            Body::Text(s) => s.as_str(),
+            _ => ""
+        };
+
+        assert_eq!(body_str, "All is good");
+
+        let uri = request.uri().to_string();
+        assert!(uri.starts_with("/health?"), "unexpected uri: {uri}");
+        assert!(uri.contains("multi=a"), "unexpected uri: {uri}");
+        assert!(uri.contains("multi=DEF"), "unexpected uri: {uri}");
+        assert!(uri.contains("multi=g"), "unexpected uri: {uri}");
+        assert!(uri.contains("state=prod"), "unexpected uri: {uri}");
+
+        // Ensure this is an VPC Lattice request
+        let req_context = request.request_context_ref().expect("Request is missing RequestContext");
+        assert!(
+            matches!(req_context, &RequestContext::VpcLattice(_)),
+            "expected Vpc lattice context, got {req_context:?}"
+        );
+    }
+
+    #[test]
+    fn deserializes_vpc_lattice_basic_base64() {
+        let input = include_str!("../tests/data/vpc_lattice_v2_request_base64.json");
+        let result = from_str(input);
+        assert!(
+            result.is_ok(),
+            "event is was not parsed as expected {result:?} given {input}"
+        );
+        let request = result.expect("failed to parse request");
+        assert_eq!(request.method(), "GET");
+
+        let body_array = match request.body() {
+            Body::Binary(s) => s.as_slice(),
+            _ => &[]
+        };
+
+        assert_eq!(body_array, *b"All is good");
+
+        // URI should have been built from host header, query and protocol etc
+        let uri = request.uri();
+
+        assert!(uri.to_string().starts_with("https://www.site.com/health?"));
+        assert!(uri.to_string().contains("multi=a&multi=DEF&multi=g"));
+        assert!(uri.to_string().contains("state=prod"));
+
+        // Ensure this is an VPC Lattice request
+        let req_context = request.request_context_ref().expect("Request is missing RequestContext");
+        assert!(
+            matches!(req_context, &RequestContext::VpcLattice(_)),
+            "expected Vpc lattice context, got {req_context:?}"
+        );
+    }
+
+    #[test]
+    fn deserializes_vpc_lattice_headers() {
+        let input = include_str!("../tests/data/vpc_lattice_v2_request.json");
+        let result = from_str(input);
+        assert!(
+            result.is_ok(),
+            "event is was not parsed as expected {result:?} given {input}"
+        );
+        let request = result.expect("failed to parse request");
+
+        // decoding multi value headers
+        let multi_headers_as_big_string = request
+            .headers()
+            .get_all("multi")
+            .iter()
+            .map(|v| v.to_str().unwrap().to_string())
+            .reduce(|acc, nxt| [acc, nxt].join(";"));
+
+        assert_eq!(multi_headers_as_big_string, Some("x;y".to_string()));
+
+        // decoding regular headers
+        let basic_headers_as_big_string = request
+            .headers()
+            .get_all("user-agent")
+            .iter()
+            .map(|v| v.to_str().unwrap().to_string())
+            .reduce(|acc, nxt| [acc, nxt].join(";"));
+
+        assert_eq!(basic_headers_as_big_string, Some("curl/7.68.0".to_string()));
+
+        // Ensure this is an VPC Lattice request
+        let req_context = request.request_context_ref().expect("Request is missing RequestContext");
+        assert!(
+            matches!(req_context, &RequestContext::VpcLattice(_)),
+            "expected Vpc lattice context, got {req_context:?}"
+        );
+    }
+
+    #[test]
+    fn deserializes_vpc_lattice_multi_value_querys() {
+        let input = include_str!("../tests/data/vpc_lattice_v2_request.json");
+        let result = from_str(input);
+        assert!(
+            result.is_ok(),
+            "event is was not parsed as expected {result:?} given {input}"
+        );
+        let request = result.expect("failed to parse request");
+        assert!(!request
+            .query_string_parameters_ref()
+            .expect("Request is missing query parameters")
+            .is_empty());
+
+        let params = request.query_string_parameters();
+        assert_eq!(Some(vec!["prod"]), params.all("state"));
+        assert_eq!(Some(vec!["a", "DEF", "g"]), params.all("multi"));
+
+        let query = request.uri().query().unwrap();
+        assert!(query.contains("multi=a&multi=DEF&multi=g"));
+        assert!(query.contains("state=prod"));
+    }
+
+    #[test]
+    #[cfg(feature = "vpc_lattice")]
+    fn deserializes_vpc_lattice_encoded_query_parameters() {
+        let input = include_str!("../tests/data/vpc_lattice_v2_request_encoded_query.json");
+        let result = from_str(input);
+        assert!(
+            result.is_ok(),
+            "event is was not parsed as expected {result:?} given {input}"
+        );
+        let request = result.expect("failed to parse request");
+
+        let params = request.query_string_parameters();
+        // percent-encoded values should be decoded
+        assert_eq!(Some(vec!["?showAll=true"]), params.all("filter"));
+        assert_eq!(Some(vec!["hello world"]), params.all("q"));
+
+        let query = request.uri().query().unwrap();
+        assert!(query.contains("filter="), "unexpected uri query: {query}");
+        assert!(query.contains("q="), "unexpected uri query: {query}");
+    }
+
+    #[test]
+    #[cfg(feature = "vpc_lattice")]
+    fn deserializes_vpc_lattice_no_body() {
+        let input = r#"{
+            "version": "2.0",
+            "path": "/ping",
+            "method": "GET",
+            "headers": {"accept": ["*/*"]},
+            "queryStringParameters": {},
+            "isBase64Encoded": false,
+            "requestContext": {
+                "serviceNetworkArn": "arn:aws:vpc-lattice:us-east-1:123456789012:servicenetwork/sn-abc",
+                "serviceArn": "arn:aws:vpc-lattice:us-east-1:123456789012:service/svc-abc",
+                "targetGroupArn": "arn:aws:vpc-lattice:us-east-1:123456789012:targetgroup/tg-abc",
+                "region": "us-east-1",
+                "timeEpoch": "1724875399456789"
+            }
+        }"#;
+        let result = from_str(input);
+        assert!(result.is_ok(), "event was not parsed as expected {result:?}");
+        let request = result.expect("failed to parse request");
+        assert_eq!(request.method(), "GET");
+        assert!(
+            matches!(request.body(), Body::Empty),
+            "expected empty body, got {:?}",
+            request.body()
         );
     }
 
