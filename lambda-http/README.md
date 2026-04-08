@@ -2,7 +2,9 @@
 
 [![Docs](https://docs.rs/lambda_http/badge.svg)](https://docs.rs/lambda_http)
 
-**`lambda-http`** is an abstraction that takes payloads from different services and turns them into http objects, making it easy to write API Gateway proxy event focused Lambda functions in Rust.
+**`lambda-http`** is an abstraction that takes HTTP-shaped payloads from different AWS services and turns them
+into standard `http` objects, making it easy to write Lambda functions in Rust that serve HTTP traffic
+regardless of the upstream trigger.
 
 lambda-http handler is made of:
 
@@ -14,17 +16,18 @@ We are able to handle requests from:
 * [API Gateway](https://docs.aws.amazon.com/apigateway/latest/developerguide/welcome.html) REST, HTTP and WebSockets API lambda integrations
 * AWS [ALB](https://docs.aws.amazon.com/elasticloadbalancing/latest/application/introduction.html)
 * AWS [Lambda function URLs](https://docs.aws.amazon.com/lambda/latest/dg/lambda-urls.html)
+* AWS [VPC Lattice](https://docs.aws.amazon.com/vpc-lattice/latest/ug/lambda-functions.html)
 
-Thanks to the `Request` type we can seamlessly handle proxy integrations without the worry to specify the specific service type.
+Thanks to the `Request` type we can seamlessly handle all of these triggers without having to write service-specific code.
 
-There is also an extension for `lambda_http::Request` structs that provides access to [API gateway](https://docs.aws.amazon.com/apigateway/latest/developerguide/set-up-lambda-proxy-integrations.html#api-gateway-simple-proxy-for-lambda-input-format) and [ALB](https://docs.aws.amazon.com/elasticloadbalancing/latest/application/lambda-functions.html) features.
+There is also an extension for `lambda_http::Request` structs that provides access to [API Gateway](https://docs.aws.amazon.com/apigateway/latest/developerguide/set-up-lambda-proxy-integrations.html#api-gateway-simple-proxy-for-lambda-input-format), [ALB](https://docs.aws.amazon.com/elasticloadbalancing/latest/application/lambda-functions.html), and [VPC Lattice](https://docs.aws.amazon.com/vpc-lattice/latest/ug/lambda-functions.html) features.
 
 For example some handy extensions:
 
 * `query_string_parameters` - Return pre-parsed http query string parameters, parameters provided after the `?` portion of a url associated with the request
 * `path_parameters` - Return pre-extracted path parameters, parameter provided in url placeholders `/foo/{bar}/baz/{qux}` associated with the request
 * `lambda_context` - Return the Lambda context for the invocation; see the [runtime docs](https://docs.aws.amazon.com/lambda/latest/dg/runtimes-api.html#runtimes-api-next)
-* `request_context` - Return the ALB/API Gateway request context
+* `request_context` - Return the ALB, API Gateway, or VPC Lattice request context
 * payload - Return the Result of a payload parsed into a type that implements `serde::Deserialize`
 
 See the `lambda_http::RequestPayloadExt` and `lambda_http::RequestExt` traits for more extensions.
@@ -238,16 +241,17 @@ If you don't want to receive the stage as part of the path, you can set the envi
 
 ## Feature flags
 
-`lambda_http` is a wrapper for HTTP events coming from three different services, Amazon Load Balancer (ALB), Amazon Api Gateway (APIGW), and AWS Lambda Function URLs. Amazon Api Gateway can also send events from three different endpoints, REST APIs, HTTP APIs, and WebSockets. `lambda_http` transforms events from all these sources into native `http::Request` objects, so you can incorporate Rust HTTP semantics into your Lambda functions.
+`lambda_http` is a wrapper for HTTP events coming from four different AWS services: Application Load Balancer (ALB), API Gateway, Lambda Function URLs, and VPC Lattice. API Gateway can send events from three different endpoint types: REST APIs, HTTP APIs, and WebSockets. `lambda_http` transforms events from all these sources into native `http::Request` objects, so you can incorporate Rust HTTP semantics into your Lambda functions.
 
 By default, `lambda_http` compiles your function to support any of those services. This increases the compile time of your function because we have to generate code for all the sources. In reality, you'll usually put a Lambda function only behind one of those sources. You can choose which source to generate code for with feature flags.
 
-The available features flags for `lambda_http` are the following:
+The available feature flags for `lambda_http` are the following:
 
 - `alb`: for events coming from [Amazon Elastic Load Balancer](https://aws.amazon.com/elasticloadbalancing/).
-- `apigw_rest`: for events coming from [Amazon API Gateway Rest APIs](https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-rest-api.html).
+- `apigw_rest`: for events coming from [Amazon API Gateway REST APIs](https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-rest-api.html).
 - `apigw_http`: for events coming from [Amazon API Gateway HTTP APIs](https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api.html) and [AWS Lambda Function URLs](https://docs.aws.amazon.com/lambda/latest/dg/lambda-urls.html).
 - `apigw_websockets`: for events coming from [Amazon API Gateway WebSockets](https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-websocket-api.html).
+- `vpc_lattice`: for events coming from [AWS VPC Lattice](https://docs.aws.amazon.com/vpc-lattice/latest/ug/lambda-functions.html).
 
 If you only want to support one of these sources, you can disable the default features, and enable only the source that you care about in your package's `Cargo.toml` file. Substitute the dependency line for `lambda_http` for the snippet below, changing the feature that you want to enable:
 

@@ -5,7 +5,7 @@
 This package makes it easy to run AWS Lambda Functions written in Rust. This workspace includes multiple crates:
 
 - [![Docs](https://docs.rs/lambda_runtime/badge.svg)](https://docs.rs/lambda_runtime) **`lambda-runtime`** is a library that provides a Lambda runtime for applications written in Rust.
-- [![Docs](https://docs.rs/lambda_http/badge.svg)](https://docs.rs/lambda_http) **`lambda-http`** is a library that makes it easy to write API Gateway proxy event focused Lambda functions in Rust.
+- [![Docs](https://docs.rs/lambda_http/badge.svg)](https://docs.rs/lambda_http) **`lambda-http`** is a library for writing HTTP Lambda functions in Rust, with support for upstream API Gateway, ALB, Lambda Function URLs, and VPC Lattice.
 - [![Docs](https://docs.rs/lambda-extension/badge.svg)](https://docs.rs/lambda-extension) **`lambda-extension`** is a library that makes it easy to write Lambda Runtime Extensions in Rust.
 - [![Docs](https://docs.rs/aws_lambda_events/badge.svg)](https://docs.rs/aws_lambda_events) **`lambda-events`** is a library with strongly-typed Lambda event structs in Rust.
 - [![Docs](https://docs.rs/lambda_runtime_api_client/badge.svg)](https://docs.rs/lambda_runtime_api_client) **`lambda-runtime-api-client`** is a shared library between the lambda runtime and lambda extension libraries that includes a common API client to talk with the AWS Lambda Runtime API.
