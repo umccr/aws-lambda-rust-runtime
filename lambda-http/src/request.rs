@@ -349,7 +349,6 @@ fn into_websocket_request(ag: ApiGatewayWebsocketProxyRequest) -> http::Request<
     req
 }
 
-
 #[cfg(feature = "vpc_lattice")]
 fn into_vpc_lattice_request(vlr: VpcLatticeRequestV2) -> http::Request<Body> {
     let http_method = vlr.method;
@@ -373,8 +372,7 @@ fn into_vpc_lattice_request(vlr: VpcLatticeRequestV2) -> http::Request<Body> {
 
     let mut req = builder
         .body(
-            vlr
-                .body
+            vlr.body
                 .as_deref()
                 .map_or_else(Body::default, |b| Body::from_maybe_encoded(base64, b)),
         )
@@ -840,7 +838,7 @@ mod tests {
 
         let body_str = match request.body() {
             Body::Text(s) => s.as_str(),
-            _ => ""
+            _ => "",
         };
 
         assert_eq!(body_str, "All is good");
@@ -853,7 +851,9 @@ mod tests {
         assert!(uri.contains("state=prod"), "unexpected uri: {uri}");
 
         // Ensure this is an VPC Lattice request
-        let req_context = request.request_context_ref().expect("Request is missing RequestContext");
+        let req_context = request
+            .request_context_ref()
+            .expect("Request is missing RequestContext");
         assert!(
             matches!(req_context, &RequestContext::VpcLattice(_)),
             "expected Vpc lattice context, got {req_context:?}"
@@ -873,7 +873,7 @@ mod tests {
 
         let body_array = match request.body() {
             Body::Binary(s) => s.as_slice(),
-            _ => &[]
+            _ => &[],
         };
 
         assert_eq!(body_array, *b"All is good");
@@ -886,7 +886,9 @@ mod tests {
         assert!(uri.to_string().contains("state=prod"));
 
         // Ensure this is an VPC Lattice request
-        let req_context = request.request_context_ref().expect("Request is missing RequestContext");
+        let req_context = request
+            .request_context_ref()
+            .expect("Request is missing RequestContext");
         assert!(
             matches!(req_context, &RequestContext::VpcLattice(_)),
             "expected Vpc lattice context, got {req_context:?}"
@@ -924,7 +926,9 @@ mod tests {
         assert_eq!(basic_headers_as_big_string, Some("curl/7.68.0".to_string()));
 
         // Ensure this is an VPC Lattice request
-        let req_context = request.request_context_ref().expect("Request is missing RequestContext");
+        let req_context = request
+            .request_context_ref()
+            .expect("Request is missing RequestContext");
         assert!(
             matches!(req_context, &RequestContext::VpcLattice(_)),
             "expected Vpc lattice context, got {req_context:?}"

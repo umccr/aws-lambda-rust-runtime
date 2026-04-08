@@ -145,13 +145,15 @@ mod tests {
 
     #[test]
     fn test_deserialize_vpc_lattice() {
-        let data =
-            include_bytes!("../../lambda-events/src/fixtures/example-vpc-lattice-v2-request.json");
+        let data = include_bytes!("../../lambda-events/src/fixtures/example-vpc-lattice-v2-request.json");
 
         let req: LambdaRequest = serde_json::from_slice(data).expect("failed to deserialize vpc lattice data");
         match req {
             LambdaRequest::VpcLatticeV2(req) => {
-                assert_eq!("arn:aws:vpc-lattice:ap-southeast-2:123456789012:targetgroup/tg-6d0ecf831eec9f09", req.request_context.target_group_arn);
+                assert_eq!(
+                    "arn:aws:vpc-lattice:ap-southeast-2:123456789012:targetgroup/tg-6d0ecf831eec9f09",
+                    req.request_context.target_group_arn
+                );
             }
             other => panic!("unexpected request variant: {other:?}"),
         }

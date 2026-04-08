@@ -7,9 +7,9 @@ use aws_lambda_events::alb::AlbTargetGroupResponse;
 use aws_lambda_events::apigw::ApiGatewayProxyResponse;
 #[cfg(feature = "apigw_http")]
 use aws_lambda_events::apigw::ApiGatewayV2httpResponse;
+use aws_lambda_events::encodings::Body;
 #[cfg(feature = "vpc_lattice")]
 use aws_lambda_events::vpc_lattice::VpcLatticeResponse;
-use aws_lambda_events::encodings::Body;
 use encoding_rs::Encoding;
 use http::{
     header::{CONTENT_ENCODING, CONTENT_TYPE},
@@ -170,7 +170,7 @@ impl LambdaResponse {
 
                 response.body = body;
                 response.is_base64_encoded = is_base64_encoded;
-                response.status_code = status_code as u16;
+                response.status_code = status_code;
                 response.headers = headers;
                 // Today, this implementation doesn't provide any additional fields
                 #[cfg(feature = "catch-all-fields")]
@@ -633,10 +633,7 @@ mod tests {
                 .expect("failed to create response"),
         );
         let json = serde_json::to_string(&res).expect("failed to serialize to json");
-        assert_eq!(
-            json,
-            r#"{"isBase64Encoded":true,"statusCode":200,"body":"aGVsbG8="}"#
-        );
+        assert_eq!(json, r#"{"isBase64Encoded":true,"statusCode":200,"body":"aGVsbG8="}"#);
     }
 
     #[test]
